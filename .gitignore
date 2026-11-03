@@ -1,0 +1,6 @@
+node_modules
+dist
+dev-dist
+*.local
+.claude/settings.local.json
+*.tsbuildinfo
