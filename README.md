@@ -9,7 +9,10 @@ npm run dev      # sviluppo, http://localhost:5173 (anche dalla rete locale)
 npm test         # test della logica
 npm run build    # crea la versione installabile in dist/
 npm run preview  # prova la build su http://localhost:4173
+npm run deploy   # test + build + pubblicazione su GitHub Pages (ramo gh-pages)
 ```
+
+App pubblicata: https://carmelofimmano.github.io/finanza-personale/
 
 ## Cosa c'è (fase 1)
 
