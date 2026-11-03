@@ -4,13 +4,11 @@ import { COLORS, db, type Account, type AccountType, type Category, type Currenc
 import { fmt, parseAmount, toInput } from '../money';
 import { accountBalances, applyRulesToUncategorized, normalizeDescription } from '../logic';
 import { byId, CatIcon, Empty, PageHeader, Sheet, useAccounts, useCategories } from '../ui';
-import { Ricorrenti } from './Ricorrenti';
 import { ImportCsv } from './ImportCsv';
 import { Backup } from './Backup';
 
 const PAGES = [
   ['conti', '🏦', 'Conti', 'Conti correnti, carte, contanti, risparmi'],
-  ['ricorrenti', '🔁', 'Ricorrenti e scadenze', 'Stipendio, affitto, abbonamenti, bollette'],
   ['categorie', '🏷️', 'Categorie', 'Personalizza nomi e icone'],
   ['regole', '🪄', 'Regole automatiche', 'Descrizione → categoria'],
   ['import', '📄', 'Importa estratto conto', 'File CSV della banca'],
@@ -23,7 +21,6 @@ export function Altro({ page, onPage }: { page?: string; onPage: (p?: string) =>
     case 'conti': return <Conti back={back} />;
     case 'categorie': return <Categorie back={back} />;
     case 'regole': return <Regole back={back} />;
-    case 'ricorrenti': return <Ricorrenti back={back} />;
     case 'import': return <ImportCsv back={back} />;
     case 'backup': return <Backup back={back} />;
   }
@@ -107,8 +104,11 @@ function AccountForm({ account, onClose }: { account?: Account; onClose: () => v
   };
 
   const remove = async () => {
-    const used = await db.transactions.filter((t) => t.accountId === account!.id || t.toAccountId === account!.id).count();
+    const id = account!.id!;
+    const used = await db.transactions.filter((t) => t.accountId === id || t.toAccountId === id).count();
     if (used > 0) return setError(`Il conto ha ${used} movimenti: puoi archiviarlo invece di eliminarlo.`);
+    const planned = (await db.recurring.filter((r) => r.accountId === id).count()) + (await db.scheduled.filter((s) => s.accountId === id && !s.doneTxId).count());
+    if (planned > 0) return setError(`Il conto ha ${planned} pagamenti pianificati: spostali o eliminali prima.`);
     if (confirm('Eliminare il conto?')) {
       await db.accounts.delete(account!.id!);
       onClose();
@@ -204,11 +204,13 @@ function CategoryForm({ category, kind, onClose }: { category?: Category; kind: 
     const used = await db.transactions.where('categoryId').equals(category!.id!).count();
     const msg = used > 0 ? `${used} movimenti resteranno senza categoria. Eliminare?` : 'Eliminare la categoria?';
     if (!confirm(msg)) return;
-    await db.transaction('rw', [db.transactions, db.categories, db.rules, db.budgets, db.recurring], async () => {
+    await db.transaction('rw', [db.transactions, db.categories, db.rules, db.budgets, db.recurring, db.scheduled, db.plans], async () => {
       await db.transactions.where('categoryId').equals(category!.id!).modify((t) => { delete t.categoryId; });
       await db.rules.where('categoryId').equals(category!.id!).delete();
       await db.budgets.where('categoryId').equals(category!.id!).delete();
       await db.recurring.filter((r) => r.categoryId === category!.id).modify((r) => { delete r.categoryId; });
+      await db.scheduled.filter((s) => s.categoryId === category!.id).modify((s) => { delete s.categoryId; });
+      await db.plans.filter((p) => p.categoryId === category!.id).modify((p) => { delete p.categoryId; });
       await db.categories.delete(category!.id!);
     });
     onClose();

@@ -2,8 +2,9 @@ import { useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db, getMeta } from '../db';
 import { backupFileName, buildBackup, downloadText, isEncrypted, markBackupDone, restoreBackup, shareText } from '../backup';
-import { shortDate } from '../dates';
-import { PageHeader } from '../ui';
+import { shortDate, today } from '../dates';
+import { transactionsToCsv } from '../csv';
+import { byId, haptic, PageHeader, toast } from '../ui';
 
 export function Backup({ back }: { back: () => void }) {
   const lastBackup = useLiveQuery(() => getMeta<string>('lastBackup'), [], undefined);
@@ -37,6 +38,7 @@ export function Backup({ back }: { back: () => void }) {
         downloadText(text, name);
       }
       await markBackupDone();
+      haptic();
       setMessage({ ok: true, text: `Backup creato${password ? ' e protetto da password' : ''}.` });
     });
 
@@ -47,6 +49,7 @@ export function Backup({ back }: { back: () => void }) {
       await restoreBackup(file.text, restorePassword || undefined);
       setFile(null);
       setRestorePassword('');
+      haptic();
       setMessage({ ok: true, text: 'Dati ripristinati.' });
     });
 
@@ -95,6 +98,16 @@ export function Backup({ back }: { back: () => void }) {
       </section>
 
       {message && <p className={`notice ${message.ok ? 'ok' : 'err'}`}>{message.text}</p>}
+
+      <section className="card">
+        <div className="card-head"><h2>Esporta per Excel</h2></div>
+        <p className="small muted" style={{ marginTop: 0 }}>Tutti i movimenti in un file CSV che si apre con Excel o Fogli Google. Non serve per il ripristino.</p>
+        <button className="btn block" disabled={busy || !count} onClick={() => run(async () => {
+          const [txs, accounts, categories] = await Promise.all([db.transactions.toArray(), db.accounts.toArray(), db.categories.toArray()]);
+          downloadText(transactionsToCsv(txs, byId(accounts), byId(categories)), `movimenti-${today()}.csv`, 'text/csv');
+          toast(`Esportati ${txs.length} movimenti`);
+        })}>⬇ Scarica movimenti (.csv)</button>
+      </section>
 
       <section className="card small">
         <div className="card-head"><h2>Come tenere allineati telefono e PC</h2></div>

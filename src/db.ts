@@ -38,7 +38,40 @@ export interface Transaction {
   tags: string[];
   note?: string;
   recurringId?: number;
+  scheduledId?: number;
   importHash?: string;
+  createdAt: number;
+}
+
+/** Pagamento singolo pianificato: una tantum oppure una rata di un piano. */
+export interface Scheduled {
+  id?: number;
+  date: string;
+  amount: number;
+  type: Kind;
+  accountId: number;
+  categoryId?: number;
+  description: string;
+  note?: string;
+  planId?: number;
+  installment?: number; // numero della rata, da 1
+  autoCreate: boolean;
+  doneTxId?: number; // movimento creato quando è stato pagato
+}
+
+export type PlanFrequency = 'weekly' | 'biweekly' | 'monthly' | 'days30';
+
+/** Acquisto rateizzato (PayPal in 3 rate, Klarna, Scalapay, finanziamenti). */
+export interface Plan {
+  id?: number;
+  description: string;
+  provider: string;
+  total: number;
+  count: number;
+  frequency: PlanFrequency;
+  firstDate: string;
+  accountId: number;
+  categoryId?: number;
   createdAt: number;
 }
 
@@ -73,7 +106,7 @@ export interface Meta {
   value: unknown;
 }
 
-export const TABLES = ['accounts', 'categories', 'transactions', 'rules', 'budgets', 'recurring', 'meta'] as const;
+export const TABLES = ['accounts', 'categories', 'transactions', 'rules', 'budgets', 'recurring', 'scheduled', 'plans', 'meta'] as const;
 
 class FinanzaDB extends Dexie {
   accounts!: Table<Account, number>;
@@ -82,6 +115,8 @@ class FinanzaDB extends Dexie {
   rules!: Table<Rule, number>;
   budgets!: Table<Budget, number>;
   recurring!: Table<Recurring, number>;
+  scheduled!: Table<Scheduled, number>;
+  plans!: Table<Plan, number>;
   meta!: Table<Meta, string>;
 
   constructor() {
@@ -94,6 +129,11 @@ class FinanzaDB extends Dexie {
       budgets: '++id, &categoryId',
       recurring: '++id, nextDate',
       meta: 'key',
+    });
+    this.version(2).stores({
+      transactions: '++id, date, accountId, toAccountId, categoryId, type, recurringId, scheduledId, importHash',
+      scheduled: '++id, date, planId',
+      plans: '++id',
     });
     this.on('populate', (tx) => {
       tx.table('categories').bulkAdd(DEFAULT_CATEGORIES);

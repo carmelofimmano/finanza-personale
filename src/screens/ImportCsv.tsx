@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import { db, type Rule, type Transaction } from '../db';
-import { applyMapping, guessMapping, importHash, readCsv, type CsvMapping } from '../csv';
+import { applyMapping, guessMapping, readCsv, selectNew, type CsvMapping } from '../csv';
 import { fmt } from '../money';
 import { shortDate } from '../dates';
-import { matchRule, normalizeDescription } from '../logic';
-import { byId, PageHeader, useAccounts, useCategories } from '../ui';
+import { matchRule } from '../logic';
+import { byId, haptic, PageHeader, toast, useAccounts, useCategories } from '../ui';
 
 export function ImportCsv({ back }: { back: () => void }) {
   const accounts = useAccounts();
@@ -14,7 +14,7 @@ export function ImportCsv({ back }: { back: () => void }) {
   const [mapping, setMapping] = useState<CsvMapping | null>(null);
   const [accountId, setAccountId] = useState<number | undefined>();
   const [rules, setRules] = useState<Rule[]>([]);
-  const [existing, setExisting] = useState<Set<string>>(new Set());
+  const [existing, setExisting] = useState<Transaction[]>([]);
   const [result, setResult] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -26,16 +26,10 @@ export function ImportCsv({ back }: { back: () => void }) {
     db.rules.toArray().then(setRules);
   }, []);
 
-  // Impronte dei movimenti già presenti sul conto, per non importarli due volte
+  // Movimenti già presenti sul conto, per non importarli due volte
   useEffect(() => {
     if (!accountId) return;
-    db.transactions.where('accountId').equals(accountId).toArray().then((txs) => {
-      setExisting(new Set(txs.map((t) => t.importHash ?? importHash(accountId, {
-        date: t.date,
-        description: t.description,
-        cents: t.type === 'income' ? t.amount : -t.amount,
-      }))));
-    });
+    db.transactions.where('accountId').equals(accountId).toArray().then(setExisting);
   }, [accountId, result]);
 
   const onFile = async (file: File) => {
@@ -52,8 +46,10 @@ export function ImportCsv({ back }: { back: () => void }) {
 
   const parsed = useMemo(() => (rows && mapping ? applyMapping(rows, mapping) : null), [rows, mapping]);
   const headers = rows && mapping ? rows[mapping.skipRows] ?? [] : [];
-  const fresh = parsed && accountId ? parsed.rows.filter((r) => !existing.has(importHash(accountId, r))) : [];
-  const dupes = parsed ? parsed.rows.length - fresh.length : 0;
+  const { fresh, dupes } = useMemo(
+    () => (parsed && accountId ? selectNew(accountId, parsed.rows, existing) : { fresh: [], dupes: 0 }),
+    [parsed, accountId, existing],
+  );
 
   const doImport = async () => {
     if (!accountId || !fresh.length) return;
@@ -71,14 +67,21 @@ export function ImportCsv({ back }: { back: () => void }) {
         categoryId: ruleKind === type ? rule!.categoryId : undefined,
         description: r.description,
         tags: [],
-        importHash: importHash(accountId, r),
+        importHash: r.hash,
         createdAt: now + i,
       };
     });
-    await db.transactions.bulkAdd(txs);
-    const categorized = txs.filter((t) => t.categoryId).length;
-    setResult(`Importati ${txs.length} movimenti (${categorized} già categorizzati).`);
-    setBusy(false);
+    try {
+      await db.transactions.bulkAdd(txs);
+      const categorized = txs.filter((t) => t.categoryId).length;
+      setResult(`Importati ${txs.length} movimenti (${categorized} già categorizzati).`);
+      haptic();
+      toast(`Importati ${txs.length} movimenti`);
+    } catch (e) {
+      setResult(`Errore durante l'import: ${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
   };
 
   const set = (patch: Partial<CsvMapping>) => setMapping((m) => (m ? { ...m, ...patch } : m));
@@ -153,7 +156,7 @@ export function ImportCsv({ back }: { back: () => void }) {
                   return (
                     <tr key={i}>
                       <td>{shortDate(r.date)}</td>
-                      <td style={{ maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis' }} title={r.description}>{r.description || normalizeDescription(r.description)}</td>
+                      <td style={{ maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis' }} title={r.description}>{r.description || '—'}</td>
                       <td>{rule ? `${catMap.get(rule.categoryId)?.icon ?? ''}` : ''}</td>
                       <td className={`num ${r.cents < 0 ? 'neg' : 'pos'}`}>{fmt(r.cents)}</td>
                     </tr>

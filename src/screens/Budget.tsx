@@ -4,7 +4,7 @@ import { db, type Category } from '../db';
 import { fmt, parseAmount, toInput } from '../money';
 import { currentMonth, daysInMonth, monthBounds } from '../dates';
 import { computeStats } from '../logic';
-import { Bar, CatIcon, MonthNav, PageHeader, Sheet, useAccounts, useCategories } from '../ui';
+import { Bar, CatIcon, haptic, MonthNav, PageHeader, Sheet, toast, useAccounts, useCategories } from '../ui';
 
 export function Budget() {
   const [month, setMonth] = useState(currentMonth());
@@ -110,6 +110,8 @@ function BudgetForm({ category, current, onClose }: { category: Category; curren
     } else {
       await db.budgets.add({ categoryId: category.id!, amount: cents });
     }
+    haptic();
+    toast(cents && cents > 0 ? `Budget ${category.name}: ${fmt(cents)} al mese` : 'Budget rimosso');
     onClose();
   };
   return (

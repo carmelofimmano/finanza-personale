@@ -64,8 +64,13 @@ export function isEncrypted(text: string): boolean {
 }
 
 export async function restoreBackup(text: string, password?: string) {
-  let parsed = JSON.parse(text) as PlainBackup | EncryptedBackup;
-  if (parsed.app !== APP) throw new Error('Il file non è un backup di Finanza Personale.');
+  let parsed: PlainBackup | EncryptedBackup;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error('Il file non è un backup valido.');
+  }
+  if (!parsed || typeof parsed !== 'object' || parsed.app !== APP) throw new Error('Il file non è un backup di Finanza Personale.');
   if ('encrypted' in parsed) {
     if (!password) throw new Error('Questo backup è protetto: inserisci la password.');
     try {
@@ -94,8 +99,8 @@ export async function markBackupDone() {
   await setMeta('lastBackup', today());
 }
 
-export function downloadText(text: string, filename: string) {
-  const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+export function downloadText(text: string, filename: string, type = 'application/json') {
+  const url = URL.createObjectURL(new Blob([text], { type }));
   const a = document.createElement('a');
   a.href = url;
   a.download = filename;
