@@ -1,23 +1,26 @@
 import { useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { COLORS, db, type Account, type AccountType, type Category, type Currency, type Kind, type Rule } from '../db';
+import { COLORS, db, type Account, type AccountType, type Category, type Currency, type Kind, type Rule, type Transaction } from '../db';
 import { fmt, parseAmount, toInput } from '../money';
 import { accountBalances, applyRulesToUncategorized, normalizeDescription } from '../logic';
 import { byId, CatIcon, Empty, PageHeader, Sheet, useAccounts, useCategories } from '../ui';
 import { ImportCsv } from './ImportCsv';
+import { Movimenti } from './Movimenti';
 import { Backup } from './Backup';
 
 const PAGES = [
   ['conti', '🏦', 'Conti', 'Conti correnti, carte, contanti, risparmi'],
+  ['storico', '📋', 'Storico movimenti', 'Cosa è già successo, con ricerca ed export'],
   ['categorie', '🏷️', 'Categorie', 'Personalizza nomi e icone'],
   ['regole', '🪄', 'Regole automatiche', 'Descrizione → categoria'],
   ['import', '📄', 'Importa estratto conto', 'File CSV della banca'],
   ['backup', '💾', 'Backup e sincronizzazione', 'Esporta o importa i dati tra telefono e PC'],
 ] as const;
 
-export function Altro({ page, onPage }: { page?: string; onPage: (p?: string) => void }) {
+export function Altro({ page, onPage, onEdit }: { page?: string; onPage: (p?: string) => void; onEdit: (tx: Transaction) => void }) {
   const back = () => onPage(undefined);
   switch (page) {
+    case 'storico': return <Movimenti onEdit={onEdit} back={back} />;
     case 'conti': return <Conti back={back} />;
     case 'categorie': return <Categorie back={back} />;
     case 'regole': return <Regole back={back} />;

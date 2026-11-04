@@ -82,10 +82,54 @@ export function Toaster() {
 
 // ---- Scheda dal basso ----
 
-/**
- * Si chiude con ✕, Esc, tocco fuori, trascinamento verso il basso e tasto indietro di Android
- * (la scheda aggiunge una voce alla cronologia, così "indietro" chiude lei invece di cambiare pagina).
- */
+// Una sola voce di cronologia per tutte le schede aperte: "indietro" chiude la più in alto.
+// La voce viene tolta con un piccolo ritardo, così passare da una scheda all'altra non la consuma.
+const sheetStack: (() => void)[] = [];
+let hasHistoryEntry = false;
+let selfBack = false;
+let backTimer: ReturnType<typeof setTimeout> | undefined;
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('popstate', () => {
+    if (selfBack) {
+      selfBack = false;
+      return;
+    }
+    if (!hasHistoryEntry) return;
+    hasHistoryEntry = false;
+    sheetStack[sheetStack.length - 1]?.();
+    if (sheetStack.length > 1) {
+      history.pushState({ sheet: true }, '');
+      hasHistoryEntry = true;
+    }
+  });
+}
+
+function registerSheet(close: () => void) {
+  sheetStack.push(close);
+  clearTimeout(backTimer);
+  if (!hasHistoryEntry) {
+    history.pushState({ sheet: true }, '');
+    hasHistoryEntry = true;
+  }
+}
+
+function unregisterSheet(close: () => void) {
+  const i = sheetStack.lastIndexOf(close);
+  if (i >= 0) sheetStack.splice(i, 1);
+  if (sheetStack.length === 0 && hasHistoryEntry) {
+    clearTimeout(backTimer);
+    backTimer = setTimeout(() => {
+      if (sheetStack.length === 0 && hasHistoryEntry && history.state?.sheet) {
+        hasHistoryEntry = false;
+        selfBack = true;
+        history.back();
+      }
+    }, 60);
+  }
+}
+
+/** Si chiude con ✕, Esc, tocco fuori, trascinamento verso il basso e tasto indietro di Android. */
 export function Sheet({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
@@ -101,21 +145,14 @@ export function Sheet({ title, onClose, children }: { title: string; onClose: ()
   }, []);
 
   useEffect(() => {
-    let popped = false;
-    history.pushState({ sheet: true }, '');
-    const onPop = () => {
-      popped = true;
-      requestClose();
-    };
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && requestClose();
-    window.addEventListener('popstate', onPop);
+    registerSheet(requestClose);
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && sheetStack[sheetStack.length - 1] === requestClose && requestClose();
     window.addEventListener('keydown', onKey);
     document.body.classList.add('no-scroll');
     return () => {
-      window.removeEventListener('popstate', onPop);
+      unregisterSheet(requestClose);
       window.removeEventListener('keydown', onKey);
-      document.body.classList.remove('no-scroll');
-      if (!popped && history.state?.sheet) history.back();
+      if (sheetStack.length === 0) document.body.classList.remove('no-scroll');
     };
   }, [requestClose]);
 
@@ -224,35 +261,45 @@ export function Segmented<T extends string>({ value, options, onChange }: { valu
   );
 }
 
-/** Linea del saldo previsto, con la linea dello zero se il saldo la attraversa. */
-export function Sparkline({ points }: { points: ForecastPoint[] }) {
+/**
+ * Linea del saldo previsto. Mostra la soglia di sicurezza quando il saldo le si avvicina
+ * e, se indicata, la linea di confronto (es. la previsione senza l'acquisto simulato).
+ */
+export function Sparkline({ points, threshold, compare, height = 64 }: { points: ForecastPoint[]; threshold?: number; compare?: ForecastPoint[]; height?: number }) {
   if (points.length < 2) return null;
   const W = 300;
-  const H = 64;
+  const H = height;
   const values = points.map((p) => p.balance);
-  const lo = Math.min(...values);
-  const hi = Math.max(...values);
-  // La scala segue i dati (con un po' di margine): includere sempre lo zero appiattirebbe saldi alti
-  const pad = Math.max((hi - lo) * 0.15, 100);
+  const all = compare ? values.concat(compare.map((p) => p.balance)) : values;
+  let lo = Math.min(...all);
+  let hi = Math.max(...all);
+  // La scala segue i dati: includere sempre lo zero appiattirebbe saldi alti. La soglia entra solo se è vicina
+  const showThreshold = threshold !== undefined && lo < threshold + Math.max(hi - lo, Math.abs(threshold) * 0.2, 1000);
+  if (showThreshold) {
+    lo = Math.min(lo, threshold!);
+    hi = Math.max(hi, threshold!);
+  }
+  const pad = Math.max((hi - lo) * 0.12, 100);
   const min = lo - pad;
   const max = hi + pad;
-  const x = (i: number) => (i / (points.length - 1)) * W;
-  const y = (v: number) => H - 4 - ((v - min) / (max - min)) * (H - 8);
-  const line = points.map((p, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(p.balance).toFixed(1)}`).join('');
-  const minIdx = values.indexOf(Math.min(...values));
-  const negative = Math.min(...values) < 0;
+  const x = (i: number, n: number) => (i / (n - 1)) * W;
+  const y = (v: number) => H - ((v - min) / (max - min)) * H;
+  const path = (ps: ForecastPoint[]) => ps.map((p, i) => `${i ? 'L' : 'M'}${x(i, ps.length).toFixed(1)},${y(p.balance).toFixed(1)}`).join('');
+  const line = path(points);
+  const below = showThreshold && Math.min(...values) < threshold!;
+  const color = below ? 'var(--neg)' : 'var(--accent)';
   return (
-    <svg className="sparkline" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" aria-hidden="true">
+    <svg className="sparkline" style={{ height }} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" aria-hidden="true">
       <defs>
-        <linearGradient id="spark-fill" x1="0" x2="0" y1="0" y2="1">
-          <stop offset="0" stopColor="var(--accent)" stopOpacity="0.25" />
-          <stop offset="1" stopColor="var(--accent)" stopOpacity="0" />
+        <linearGradient id={`spark-fill-${below ? 'neg' : 'pos'}`} x1="0" x2="0" y1="0" y2="1">
+          <stop offset="0" stopColor={color} stopOpacity="0.22" />
+          <stop offset="1" stopColor={color} stopOpacity="0" />
         </linearGradient>
       </defs>
-      <path d={`${line}L${W},${H}L0,${H}Z`} fill="url(#spark-fill)" />
-      {negative && <line x1="0" x2={W} y1={y(0)} y2={y(0)} stroke="var(--neg)" strokeDasharray="4 4" strokeWidth="1" vectorEffect="non-scaling-stroke" />}
-      <path d={line} fill="none" stroke="var(--accent)" strokeWidth="2" vectorEffect="non-scaling-stroke" />
-      <circle cx={x(minIdx)} cy={y(values[minIdx])} r="3" fill={negative ? 'var(--neg)' : 'var(--accent)'} />
+      <path d={`${line}L${W},${H}L0,${H}Z`} fill={`url(#spark-fill-${below ? 'neg' : 'pos'})`} />
+      {showThreshold && <line x1="0" x2={W} y1={y(threshold!)} y2={y(threshold!)} stroke="var(--neg)" strokeOpacity="0.7" strokeDasharray="4 4" strokeWidth="1" vectorEffect="non-scaling-stroke" />}
+      {compare && <path d={path(compare)} fill="none" stroke="var(--muted)" strokeDasharray="3 3" strokeWidth="1.5" vectorEffect="non-scaling-stroke" />}
+      <path d={line} fill="none" stroke={color} strokeWidth="2" vectorEffect="non-scaling-stroke" />
     </svg>
   );
 }

@@ -1,29 +1,34 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { Transaction } from './db';
 import { processDue } from './logic';
-import { Home } from './screens/Home';
-import { Movimenti } from './screens/Movimenti';
+import { Previsione, BalanceSheet, Simulator } from './screens/Previsione';
+import { Scadenze } from './screens/Scadenze';
 import { Budget } from './screens/Budget';
 import { Altro } from './screens/Altro';
-import { Pianificati, type PlannedView } from './screens/Pianificati';
+import { Pianificati, PlanForm, RecurringForm, ScheduledForm, type PlannedView } from './screens/Pianificati';
 import { TxForm } from './screens/TxForm';
-import { haptic, toast, Toaster } from './ui';
+import { haptic, Sheet, toast, Toaster } from './ui';
 
 const TABS = [
-  ['home', '🏠', 'Home'],
-  ['movimenti', '📋', 'Movimenti'],
-  ['pianificati', '📅', 'Pianificati'],
-  ['budget', '🎯', 'Budget'],
+  ['home', '📈', 'Previsione'],
+  ['scadenze', '🗓️', 'Scadenze'],
+  ['pianificati', '🔁', 'Pianificati'],
+  ['variabili', '🛒', 'Variabili'],
   ['altro', '⚙️', 'Altro'],
 ] as const;
 
 const PLANNED_VIEWS: PlannedView[] = ['ricorrenti', 'unatantum', 'rate'];
 
-// La navigazione vive nell'hash (#movimenti, #altro/backup) così il tasto indietro di Android funziona
+// Vecchi indirizzi, per chi ha salvato un collegamento
+const ALIASES: Record<string, string> = { 'altro/ricorrenti': 'pianificati', budget: 'variabili', movimenti: 'altro/storico' };
+
+type SheetKind = 'add' | 'balance' | 'simulate' | 'out' | 'in' | 'recurring' | 'plan' | 'spent';
+
+// La navigazione vive nell'hash (#scadenze, #altro/backup) così il tasto indietro di Android funziona
 function useRoute(): [string, (r: string, replace?: boolean) => void] {
   const read = () => {
     const r = window.location.hash.slice(1) || 'home';
-    return r === 'altro/ricorrenti' ? 'pianificati' : r;
+    return ALIASES[r] ?? r;
   };
   const [route, setRoute] = useState(read);
   useEffect(() => {
@@ -50,12 +55,13 @@ function useRoute(): [string, (r: string, replace?: boolean) => void] {
 export function App() {
   const [route, go] = useRoute();
   const [editing, setEditing] = useState<Transaction | 'new' | null>(null);
+  const [sheet, setSheet] = useState<SheetKind | null>(null);
   const [tab, sub] = route.split('/');
 
   useEffect(() => {
     const run = () =>
       processDue().then((n) => {
-        if (n) toast(n === 1 ? '1 pagamento pianificato registrato' : `${n} pagamenti pianificati registrati`);
+        if (n) toast(n === 1 ? '1 scadenza automatica registrata' : `${n} scadenze automatiche registrate`);
       });
     run();
     const onVisible = () => document.visibilityState === 'visible' && run();
@@ -81,6 +87,7 @@ export function App() {
   useEffect(() => setFabHidden(false), [route]);
 
   const closeForm = useCallback(() => setEditing(null), []);
+  const closeSheet = useCallback(() => setSheet(null), []);
   const activeTab = TABS.some((t) => t[0] === tab) ? tab : 'home';
   const plannedView = PLANNED_VIEWS.includes(sub as PlannedView) ? (sub as PlannedView) : 'ricorrenti';
 
@@ -88,21 +95,21 @@ export function App() {
     <>
       <main>
         <div className="screen" key={route}>
-          {activeTab === 'movimenti' ? (
-            <Movimenti onEdit={setEditing} />
+          {activeTab === 'scadenze' ? (
+            <Scadenze />
           ) : activeTab === 'pianificati' ? (
             <Pianificati view={plannedView} onView={(v) => go(`pianificati/${v}`, true)} />
-          ) : activeTab === 'budget' ? (
+          ) : activeTab === 'variabili' ? (
             <Budget />
           ) : activeTab === 'altro' ? (
-            <Altro page={sub} onPage={(p) => go(p ? `altro/${p}` : 'altro')} />
+            <Altro page={sub} onPage={(p) => go(p ? `altro/${p}` : 'altro')} onEdit={setEditing} />
           ) : (
-            <Home onEdit={setEditing} onGo={go} />
+            <Previsione onGo={go} onOpen={setSheet} />
           )}
         </div>
       </main>
 
-      <button className={`fab${fabHidden ? ' hidden' : ''}`} onClick={() => { haptic(5); setEditing('new'); }} aria-label="Nuovo movimento">+</button>
+      <button className={`fab${fabHidden ? ' hidden' : ''}`} onClick={() => { haptic(5); setSheet('add'); }} aria-label="Aggiungi">+</button>
 
       <nav className="tabbar">
         {TABS.map(([id, icon, label]) => (
@@ -123,7 +130,40 @@ export function App() {
       </nav>
 
       <Toaster />
+      {sheet === 'add' && <AddChooser onPick={(k) => (k === 'spent' ? (setSheet(null), setEditing('new')) : setSheet(k))} onClose={closeSheet} />}
+      {sheet === 'balance' && <BalanceSheet onClose={closeSheet} />}
+      {sheet === 'simulate' && <Simulator onClose={closeSheet} />}
+      {sheet === 'out' && <ScheduledForm initialType="expense" onClose={closeSheet} />}
+      {sheet === 'in' && <ScheduledForm initialType="income" onClose={closeSheet} />}
+      {sheet === 'recurring' && <RecurringForm onClose={closeSheet} />}
+      {sheet === 'plan' && <PlanForm onClose={closeSheet} />}
       {editing && <TxForm tx={editing === 'new' ? undefined : editing} onClose={closeForm} />}
     </>
+  );
+}
+
+const CHOICES: [SheetKind, string, string, string][] = [
+  ['out', '💸', 'Uscita futura', 'Bollo, assicurazione, una visita'],
+  ['in', '💰', 'Entrata futura', 'Rimborso, bonus, una vendita'],
+  ['recurring', '🔁', 'Ricorrente', 'Stipendio, affitto, abbonamenti'],
+  ['plan', '💳', 'Acquisto a rate', 'PayPal, Klarna, Scalapay'],
+  ['simulate', '🤔', 'Posso permettermelo?', 'Prova un acquisto senza salvarlo'],
+  ['balance', '🏦', 'Aggiorna saldo', 'Riallinea con la banca'],
+  ['spent', '🧾', 'Spesa già fatta', 'Scala subito dal saldo'],
+];
+
+function AddChooser({ onPick, onClose }: { onPick: (k: SheetKind) => void; onClose: () => void }) {
+  return (
+    <Sheet title="Aggiungi" onClose={onClose}>
+      <div className="choices">
+        {CHOICES.map(([k, icon, title, sub]) => (
+          <button key={k} className="choice" onClick={() => { haptic(5); onPick(k); }}>
+            <span className="choice-icon">{icon}</span>
+            <span className="choice-title">{title}</span>
+            <span className="choice-sub">{sub}</span>
+          </button>
+        ))}
+      </div>
+    </Sheet>
   );
 }

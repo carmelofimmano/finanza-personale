@@ -113,7 +113,7 @@ function RecurringList({ onEdit, onSuggest }: { onEdit: (r: Recurring) => void; 
                   <CatIcon category={r.categoryId ? catMap.get(r.categoryId) : undefined} />
                   <div className="grow">
                     <div className="title">{r.description}</div>
-                    <div className="sub">{FREQ[r.frequency]} · prossima {shortDate(r.nextDate)} · {r.autoCreate ? 'automatica' : 'promemoria'}{r.active ? '' : ' · in pausa'}</div>
+                    <div className="sub">{FREQ[r.frequency]} · {r.endDate && r.nextDate > r.endDate ? 'terminata' : `prossima ${shortDate(r.nextDate)}`}{r.endDate ? ` · fino al ${shortDate(r.endDate)}` : ''} ·{r.autoCreate ? 'automatica' : 'promemoria'}{r.active ? '' : ' · in pausa'}</div>
                   </div>
                   <Amount cents={r.amount} type={r.type} currency={accMap.get(r.accountId)?.currency} />
                 </button>
@@ -126,7 +126,7 @@ function RecurringList({ onEdit, onSuggest }: { onEdit: (r: Recurring) => void; 
   );
 }
 
-function RecurringForm({ item, initial, onClose }: { item?: Recurring; initial?: Partial<Recurring>; onClose: () => void }) {
+export function RecurringForm({ item, initial, onClose }: { item?: Recurring; initial?: Partial<Recurring>; onClose: () => void }) {
   const accounts = useAccounts();
   const categories = useCategories();
   const src = item ?? initial;
@@ -139,6 +139,7 @@ function RecurringForm({ item, initial, onClose }: { item?: Recurring; initial?:
   const [nextDate, setNextDate] = useState(src?.nextDate ?? today());
   const [autoCreate, setAutoCreate] = useState(src?.autoCreate ?? true);
   const [active, setActive] = useState(src?.active ?? true);
+  const [endDate, setEndDate] = useState(src?.endDate ?? '');
   const [error, setError] = useState('');
 
   const save = async () => {
@@ -156,9 +157,11 @@ function RecurringForm({ item, initial, onClose }: { item?: Recurring; initial?:
       frequency,
       day: Number(nextDate.slice(8, 10)),
       nextDate,
+      endDate: endDate || undefined,
       autoCreate,
       active,
     };
+    if (endDate && endDate < nextDate) return setError('La data di fine è prima della prossima scadenza.');
     if (item?.id) await db.recurring.put({ ...data, id: item.id });
     else await db.recurring.add(data);
     const created = await processDue();
@@ -192,7 +195,10 @@ function RecurringForm({ item, initial, onClose }: { item?: Recurring; initial?:
           <AccountSelect value={accountId} onChange={setAccountId} />
           <label className="field"><span>Prossima scadenza</span><input className="input" type="date" value={nextDate} onChange={(e) => setNextDate(e.target.value || today())} /></label>
         </div>
-        <CategorySelect kind={type} value={categoryId} onChange={setCategoryId} />
+        <div className="grid-2">
+          <CategorySelect kind={type} value={categoryId} onChange={setCategoryId} />
+          <label className="field"><span>Fino al (facoltativo)</span><input className="input" type="date" value={endDate} min={nextDate} onChange={(e) => setEndDate(e.target.value)} /></label>
+        </div>
         <label className="toggle"><span>Registra automaticamente alla scadenza</span><input type="checkbox" checked={autoCreate} onChange={(e) => setAutoCreate(e.target.checked)} /></label>
         <label className="toggle"><span>Attiva</span><input type="checkbox" checked={active} onChange={(e) => setActive(e.target.checked)} /></label>
         {autoCreate && nextDate < today() && <p className="notice">Le scadenze dal {shortDate(nextDate)} a oggi verranno registrate subito.</p>}
@@ -213,8 +219,8 @@ function ScheduledList({ onEdit }: { onEdit: (s: Scheduled) => void }) {
   const catMap = byId(useCategories());
   const accMap = byId(useAccounts(true));
   const [showDone, setShowDone] = useState(false);
-  const pending = all.filter((s) => !s.doneTxId);
-  const done = all.filter((s) => s.doneTxId).reverse();
+  const pending = all.filter((s) => !s.doneTxId && !s.skipped);
+  const done = all.filter((s) => s.doneTxId || s.skipped).reverse();
   const t = today();
 
   const row = (s: Scheduled) => (
@@ -224,13 +230,13 @@ function ScheduledList({ onEdit }: { onEdit: (s: Scheduled) => void }) {
         <div className="grow">
           <div className="title">{s.description}</div>
           <div className="sub">
-            {s.doneTxId ? `Pagato · ${shortDate(s.date)}` : s.date < t ? <span className="warn">Scaduto il {shortDate(s.date)}</span> : shortDate(s.date)}
-            {!s.doneTxId && (s.autoCreate ? ' · automatico' : ' · promemoria')}
+            {s.skipped ? `Saltato · ${shortDate(s.date)}` : s.doneTxId ? `Registrato · ${shortDate(s.date)}` : s.date < t ? <span className="warn">Scaduto il {shortDate(s.date)}</span> : shortDate(s.date)}
+            {!s.doneTxId && !s.skipped && (s.autoCreate ? ' · automatico' : ' · promemoria')}
           </div>
         </div>
         <Amount cents={s.amount} type={s.type} currency={accMap.get(s.accountId)?.currency} />
       </button>
-      {!s.doneTxId && !s.autoCreate && (
+      {!s.doneTxId && !s.skipped && !s.autoCreate && (
         <button className="chip confirm" aria-label="Segna come pagato" onClick={async () => { await confirmScheduled(s); haptic(); toast('Registrato'); }}>✓</button>
       )}
     </li>
@@ -252,9 +258,9 @@ function ScheduledList({ onEdit }: { onEdit: (s: Scheduled) => void }) {
   );
 }
 
-function ScheduledForm({ item, onClose }: { item?: Scheduled; onClose: () => void }) {
+export function ScheduledForm({ item, initialType = 'expense', onClose }: { item?: Scheduled; initialType?: Kind; onClose: () => void }) {
   const accounts = useAccounts();
-  const [type, setType] = useState<Kind>(item?.type ?? 'expense');
+  const [type, setType] = useState<Kind>(item?.type ?? initialType);
   const [description, setDescription] = useState(item?.description ?? '');
   const [amount, setAmount] = useState(item ? toInput(item.amount) : '');
   const [date, setDate] = useState(item?.date ?? addDays(today(), 7));
@@ -263,7 +269,7 @@ function ScheduledForm({ item, onClose }: { item?: Scheduled; onClose: () => voi
   const [autoCreate, setAutoCreate] = useState(item?.autoCreate ?? true);
   const [note, setNote] = useState(item?.note ?? '');
   const [error, setError] = useState('');
-  const done = !!item?.doneTxId;
+  const done = !!item?.doneTxId || !!item?.skipped;
 
   const save = async () => {
     const cents = evalAmount(amount);
@@ -289,9 +295,9 @@ function ScheduledForm({ item, onClose }: { item?: Scheduled; onClose: () => voi
 
   if (done) {
     return (
-      <Sheet title="Pagamento completato" onClose={onClose}>
+      <Sheet title={item!.skipped ? 'Pagamento saltato' : 'Pagamento registrato'} onClose={onClose}>
         <p>{item!.description}: <Amount cents={item!.amount} type={item!.type} /> il {shortDate(item!.date)}.</p>
-        <p className="small muted">Il movimento è stato registrato: per modificarlo aprilo da Movimenti.</p>
+        <p className="small muted">{item!.skipped ? 'Non conta nella previsione.' : 'Il movimento è stato registrato: lo trovi in Altro → Storico movimenti.'}</p>
         <div className="btn-row"><button className="btn danger" onClick={remove}>Elimina dallo storico</button></div>
       </Sheet>
     );
@@ -384,7 +390,7 @@ function providerIcon(provider: string) {
   return p.includes('paypal') ? '🅿️' : p.includes('klarna') ? '🩷' : p.includes('scalapay') ? '💠' : '💳';
 }
 
-function PlanForm({ onClose }: { onClose: () => void }) {
+export function PlanForm({ onClose }: { onClose: () => void }) {
   const accounts = useAccounts();
   const [preset, setPreset] = useState(0);
   const [provider, setProvider] = useState(PRESETS[0].provider);
@@ -472,7 +478,7 @@ function PlanForm({ onClose }: { onClose: () => void }) {
   );
 }
 
-function PlanDetail({ plan, onClose }: { plan: Plan; onClose: () => void }) {
+export function PlanDetail({ plan, onClose }: { plan: Plan; onClose: () => void }) {
   const installments = useLiveQuery(() => db.scheduled.where('planId').equals(plan.id!).toArray(), [plan.id], []);
   const s = planStatus(installments);
   const t = today();

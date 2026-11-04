@@ -1,6 +1,6 @@
 # Finanza Personale
 
-App per spese, budget e risparmi che funziona su telefono e PC. È una PWA "local-first": i dati restano nel browser del dispositivo (IndexedDB) e non passano da nessun server.
+App per prevedere i flussi di cassa: parte dal saldo di oggi e mostra come cambierà con entrate, uscite, rate e spese variabili future. Funziona su telefono e PC. È una PWA "local-first": i dati restano nel browser del dispositivo (IndexedDB) e non passano da nessun server.
 
 ## Comandi
 
@@ -14,7 +14,13 @@ npm run deploy   # test + build + pubblicazione su GitHub Pages (ramo gh-pages)
 
 App pubblicata: https://carmelofimmano.github.io/finanza-personale/
 
-## Cosa c'è (fase 1)
+## Cosa c'è
+
+- Previsione del saldo a 1, 3, 6 o 12 mesi con soglia di sicurezza e riepilogo mese per mese
+- Scadenze: linea del tempo con saldo previsto per giorno; conferma con l'importo reale o salta
+- Spese variabili stimate al mese, distribuite giorno per giorno nella previsione
+- "Posso permettermelo?": simula un acquisto, subito o a rate, prima di confermarlo
+- Saldo di oggi riallineabile con la banca in un tocco, senza ricostruire il passato
 
 - Conti in EUR e USD, saldo iniziale, trasferimenti anche tra valute diverse
 - Movimenti con categoria, tag e nota; ricerca e filtri

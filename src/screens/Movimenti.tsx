@@ -10,7 +10,7 @@ import { TxRow } from './TxRow';
 
 const PAGE = 150;
 
-export function Movimenti({ onEdit }: { onEdit: (tx: Transaction) => void }) {
+export function Movimenti({ onEdit, back }: { onEdit: (tx: Transaction) => void; back?: () => void }) {
   const [month, setMonth] = useState(currentMonth());
   const [query, setQuery] = useState('');
   const [accountFilter, setAccountFilter] = useState('');
@@ -68,7 +68,7 @@ export function Movimenti({ onEdit }: { onEdit: (tx: Transaction) => void }) {
 
   return (
     <>
-      <PageHeader title="Movimenti" action={filtered.length > 0 && <button className="btn" onClick={exportCsv} title="Apri con Excel">⬇ Excel</button>} />
+      <PageHeader title="Storico" back={back} action={filtered.length > 0 && <button className="btn" onClick={exportCsv} title="Apri con Excel">⬇ Excel</button>} />
       <div className="sticky">
         <input className="input search" type="search" placeholder="Cerca descrizione, tag, nota…" value={query} onChange={(e) => { setQuery(e.target.value); setLimit(PAGE); }} />
         <div className="filters">

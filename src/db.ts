@@ -57,6 +57,7 @@ export interface Scheduled {
   installment?: number; // numero della rata, da 1
   autoCreate: boolean;
   doneTxId?: number; // movimento creato quando è stato pagato
+  skipped?: boolean; // saltato: non avverrà e non conta nella previsione
 }
 
 export type PlanFrequency = 'weekly' | 'biweekly' | 'monthly' | 'days30';
@@ -97,6 +98,7 @@ export interface Recurring {
   frequency: Frequency;
   day: number; // giorno di riferimento per le cadenze mensili/annuali
   nextDate: string;
+  endDate?: string; // ultima data possibile (es. fine contratto); assente = senza fine
   autoCreate: boolean; // true: registra da solo; false: solo promemoria
   active: boolean;
 }

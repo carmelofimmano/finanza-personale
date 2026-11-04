@@ -130,7 +130,7 @@ async function processRecurring(): Promise<number> {
     for (const r of due) {
       if (!r.active || !r.autoCreate) continue;
       let next = r.nextDate;
-      for (let guard = 0; next <= t && guard < 1000; guard++) {
+      for (let guard = 0; next <= t && (!r.endDate || next <= r.endDate) && guard < 1000; guard++) {
         await db.transactions.add(recurringToTransaction(r, next));
         created++;
         next = nextOccurrence(next, r.frequency, r.day);
@@ -145,7 +145,7 @@ async function processRecurring(): Promise<number> {
 async function processScheduled(): Promise<number> {
   let created = 0;
   await db.transaction('rw', db.scheduled, db.transactions, async () => {
-    const due = await db.scheduled.where('date').belowOrEqual(today()).filter((s) => s.autoCreate && !s.doneTxId).toArray();
+    const due = await db.scheduled.where('date').belowOrEqual(today()).filter((s) => s.autoCreate && !s.doneTxId && !s.skipped).toArray();
     for (const s of due) {
       const txId = await db.transactions.add(scheduledToTransaction(s));
       await db.scheduled.update(s.id!, { doneTxId: txId });
@@ -169,21 +169,49 @@ export function processDue(): Promise<number> {
   return running;
 }
 
-/** Registra subito la prossima occorrenza di un promemoria e passa alla successiva. */
-export async function confirmRecurring(r: Recurring) {
+/**
+ * Registra la prossima occorrenza di una ricorrenza e passa alla successiva.
+ * `amount` permette di registrare l'importo reale (es. una bolletta diversa dalla stima).
+ */
+export async function confirmRecurring(r: Recurring, amount = r.amount, date = r.nextDate) {
   await db.transaction('rw', db.recurring, db.transactions, async () => {
-    await db.transactions.add(recurringToTransaction(r, r.nextDate));
-    await db.recurring.update(r.id!, { nextDate: nextOccurrence(r.nextDate, r.frequency, r.day) });
+    const fresh = await db.recurring.get(r.id!);
+    if (!fresh || fresh.nextDate !== r.nextDate) return; // già confermata altrove
+    await db.transactions.add({ ...recurringToTransaction(fresh, date), amount });
+    await db.recurring.update(r.id!, { nextDate: nextOccurrence(fresh.nextDate, fresh.frequency, fresh.day) });
   });
 }
 
+/** Salta la prossima occorrenza senza registrare nulla (es. abbonamento sospeso un mese). */
+export async function skipRecurring(r: Recurring) {
+  await db.recurring.update(r.id!, { nextDate: nextOccurrence(r.nextDate, r.frequency, r.day) });
+}
+
 /** Segna come pagato un pagamento pianificato, alla data prevista o a quella indicata. */
-export async function confirmScheduled(s: Scheduled, date = s.date) {
+export async function confirmScheduled(s: Scheduled, date = s.date, amount?: number) {
   await db.transaction('rw', db.scheduled, db.transactions, async () => {
     const fresh = await db.scheduled.get(s.id!);
-    if (!fresh || fresh.doneTxId) return;
-    const txId = await db.transactions.add(scheduledToTransaction(fresh, date));
+    if (!fresh || fresh.doneTxId || fresh.skipped) return;
+    const txId = await db.transactions.add({ ...scheduledToTransaction(fresh, date), amount: amount ?? fresh.amount });
     await db.scheduled.update(s.id!, { doneTxId: txId });
+  });
+}
+
+export async function skipScheduled(s: Scheduled) {
+  await db.scheduled.update(s.id!, { skipped: true });
+}
+
+/**
+ * Riallinea il saldo di un conto a quello reale (es. letto dall'app della banca)
+ * spostando il saldo iniziale, senza creare movimenti fittizi.
+ */
+export async function setCurrentBalance(accountId: number, target: number) {
+  await db.transaction('rw', db.accounts, db.transactions, async () => {
+    const account = await db.accounts.get(accountId);
+    if (!account) return;
+    const txs = await db.transactions.filter((t) => t.accountId === accountId || t.toAccountId === accountId).toArray();
+    const current = accountBalances([account], txs).get(accountId) ?? 0;
+    await db.accounts.update(accountId, { initial: account.initial + (target - current) });
   });
 }
 
@@ -193,7 +221,7 @@ export function upcomingOccurrences(list: Recurring[], days: number): { recurrin
   for (const r of list) {
     if (!r.active) continue;
     let d = r.nextDate;
-    for (let guard = 0; d <= end && guard < 60; guard++) {
+    for (let guard = 0; d <= end && (!r.endDate || d <= r.endDate) && guard < 1000; guard++) {
       out.push({ recurring: r, date: d });
       d = nextOccurrence(d, r.frequency, r.day);
     }
@@ -232,7 +260,7 @@ export function upcomingAll(recurring: Recurring[], scheduled: Scheduled[], days
     recurring: r,
   }));
   for (const s of scheduled) {
-    if (s.doneTxId || s.date > end) continue;
+    if (s.doneTxId || s.skipped || s.date > end) continue;
     items.push({
       key: `s${s.id}`,
       date: s.date,
@@ -254,25 +282,96 @@ export interface ForecastPoint {
   balance: number;
 }
 
-/** Saldo previsto giorno per giorno sui conti in EUR, a partire da oggi. */
-export function forecast(start: number, items: UpcomingItem[], eurAccounts: Set<number>, days: number) {
+export interface MonthProjection {
+  month: string;
+  income: number;
+  expense: number; // uscite pianificate
+  variable: number; // spese variabili stimate
+  endBalance: number;
+}
+
+export interface VariableSpending {
+  monthly: number; // stima mensile delle spese variabili (somma dei budget)
+  spentThisMonth: number; // già registrato nel mese corrente sulle stesse categorie
+}
+
+export interface Forecast {
+  points: ForecastPoint[];
+  min: ForecastPoint;
+  end: number;
+  months: MonthProjection[];
+}
+
+/**
+ * Saldo previsto giorno per giorno sui conti in EUR, a partire da oggi.
+ * Le scadenze passate non ancora confermate contano oggi. Le spese variabili, se indicate,
+ * vengono distribuite in modo uniforme sui giorni: nel mese corrente solo la parte non ancora spesa.
+ */
+export function forecast(start: number, items: UpcomingItem[], eurAccounts: Set<number>, days: number, variable?: VariableSpending): Forecast {
   const t = today();
-  const deltas = new Map<string, number>();
+  const deltas = new Map<string, { income: number; expense: number }>();
   for (const i of items) {
     if (!eurAccounts.has(i.accountId)) continue;
     const date = i.date < t ? t : i.date;
-    deltas.set(date, (deltas.get(date) ?? 0) + (i.type === 'income' ? i.amount : -i.amount));
+    const d = deltas.get(date) ?? { income: 0, expense: 0 };
+    if (i.type === 'income') d.income += i.amount;
+    else d.expense += i.amount;
+    deltas.set(date, d);
   }
+
+  const [ty, tm, td] = t.split('-').map(Number);
+  const currentLeft = Math.max(0, (variable?.monthly ?? 0) - (variable?.spentThisMonth ?? 0));
+  const daysLeftInMonth = daysInMonth(ty, tm) - td + 1;
+  const variableFor = (date: string) => {
+    if (!variable?.monthly) return 0;
+    const [y, m] = date.split('-').map(Number);
+    return y === ty && m === tm ? currentLeft / daysLeftInMonth : variable.monthly / daysInMonth(y, m);
+  };
+
   const points: ForecastPoint[] = [];
-  let balance = start;
+  const months: MonthProjection[] = [];
+  let exact = start; // con frazioni di centesimo, per non accumulare arrotondamenti
   let min: ForecastPoint = { date: t, balance: start };
   for (let i = 0; i <= days; i++) {
     const date = addDays(t, i);
-    balance += deltas.get(date) ?? 0;
+    const d = deltas.get(date);
+    const v = variableFor(date);
+    exact += (d?.income ?? 0) - (d?.expense ?? 0) - v;
+    const balance = Math.round(exact);
     points.push({ date, balance });
     if (balance < min.balance) min = { date, balance };
+
+    const mk = monthKey(date);
+    let month = months[months.length - 1];
+    if (!month || month.month !== mk) months.push((month = { month: mk, income: 0, expense: 0, variable: 0, endBalance: 0 }));
+    month.income += d?.income ?? 0;
+    month.expense += d?.expense ?? 0;
+    month.variable += v;
+    month.endBalance = balance;
   }
-  return { points, min, end: balance };
+  for (const m of months) m.variable = Math.round(m.variable);
+  return { points, min, end: points[points.length - 1].balance, months };
+}
+
+/** Primo giorno in cui il saldo previsto scende sotto la soglia. */
+export function firstBelow(points: ForecastPoint[], threshold: number): ForecastPoint | undefined {
+  return points.find((p) => p.balance < threshold);
+}
+
+/** Voci ipotetiche per il simulatore "Posso permettermelo?": acquisto unico o a rate. */
+export function hypotheticalItems(input: { amount: number; date: string; count: number; frequency: PlanFrequency; accountId: number }): UpcomingItem[] {
+  const amounts = splitInstallments(input.amount, input.count);
+  const dates = installmentDates(input.date, amounts.length, input.frequency);
+  return amounts.map((amount, i) => ({
+    key: `sim${i}`,
+    date: dates[i],
+    description: 'Simulazione',
+    amount,
+    type: 'expense',
+    accountId: input.accountId,
+    auto: true,
+    confirmable: false,
+  }));
 }
 
 /** Divide il totale in rate intere; i centesimi che avanzano vanno sulla prima. */
@@ -323,7 +422,7 @@ export async function createPlan(input: Omit<Plan, 'id' | 'createdAt'>): Promise
 
 /** Paga oggi tutte le rate rimaste (estinzione anticipata). */
 export async function payPlanNow(planId: number) {
-  const pending = (await db.scheduled.where('planId').equals(planId).toArray()).filter((s) => !s.doneTxId);
+  const pending = (await db.scheduled.where('planId').equals(planId).toArray()).filter((s) => !s.doneTxId && !s.skipped);
   for (const s of pending) await confirmScheduled(s, today());
 }
 
@@ -338,7 +437,7 @@ export async function deletePlan(planId: number) {
 export function planStatus(installments: Scheduled[]) {
   const sorted = [...installments].sort((a, b) => (a.installment ?? 0) - (b.installment ?? 0));
   const paid = sorted.filter((s) => s.doneTxId);
-  const pending = sorted.filter((s) => !s.doneTxId);
+  const pending = sorted.filter((s) => !s.doneTxId && !s.skipped);
   return {
     paidCount: paid.length,
     paid: paid.reduce((s, i) => s + i.amount, 0),

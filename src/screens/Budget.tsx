@@ -33,19 +33,30 @@ export function Budget() {
 
   return (
     <>
-      <PageHeader title="Budget" />
-      <MonthNav month={month} onChange={setMonth} />
+      <PageHeader title="Spese variabili" />
+      <p className="small muted" style={{ marginTop: 0 }}>
+        Le spese che non pianifichi una per una: spesa, carburante, uscite. Indica quanto spendi di solito al mese
+        e la previsione le distribuisce giorno per giorno. Non serve registrarle.
+      </p>
 
       <section className="card hero">
-        <div className="label">Speso sui budget</div>
-        <div className="big">{fmt(spentInBudget)} <span className="muted" style={{ fontSize: 16, fontWeight: 500 }}>/ {fmt(totalBudget)}</span></div>
-        <Bar value={spentInBudget} max={totalBudget} over={spentInBudget > totalBudget} />
-        <p className="small muted" style={{ margin: '8px 0 0' }}>
-          {totalBudget === 0
-            ? 'Tocca una categoria per impostare un budget mensile.'
-            : `Rimangono ${fmt(Math.max(0, totalBudget - spentInBudget))}. Spese totali del mese: ${fmt(stats.expense)}.`}
-        </p>
+        <div className="label">Stima mensile</div>
+        <div className="big">{fmt(totalBudget)}</div>
+        {totalBudget === 0 ? (
+          <p className="small muted" style={{ margin: '8px 0 0' }}>Tocca una categoria qui sotto per indicare quanto spendi al mese.</p>
+        ) : (
+          <p className="small muted" style={{ margin: '8px 0 0' }}>≈ {fmt(Math.round(totalBudget / 30))} al giorno nella previsione.</p>
+        )}
+        {spentInBudget > 0 && (
+          <>
+            <Bar value={spentInBudget} max={totalBudget} over={spentInBudget > totalBudget} />
+            <p className="small muted" style={{ margin: '6px 0 0' }}>
+              Registrate nel mese: {fmt(spentInBudget)}. La previsione usa la stima solo per la parte non ancora spesa.
+            </p>
+          </>
+        )}
       </section>
+      <MonthNav month={month} onChange={setMonth} />
 
       {withBudget.length > 0 && (
         <section className="card">
@@ -78,7 +89,7 @@ export function Budget() {
         </section>
       )}
 
-      <h3>Senza budget</h3>
+      <h3>{withBudget.length ? 'Altre categorie' : 'Categorie'}</h3>
       <section className="card">
         <ul className="list">
           {without.map((c) => (
@@ -111,14 +122,14 @@ function BudgetForm({ category, current, onClose }: { category: Category; curren
       await db.budgets.add({ categoryId: category.id!, amount: cents });
     }
     haptic();
-    toast(cents && cents > 0 ? `Budget ${category.name}: ${fmt(cents)} al mese` : 'Budget rimosso');
+    toast(cents && cents > 0 ? `${category.name}: ${fmt(cents)} al mese` : 'Stima rimossa');
     onClose();
   };
   return (
-    <Sheet title={`Budget: ${category.icon} ${category.name}`} onClose={onClose}>
+    <Sheet title={`${category.icon} ${category.name}`} onClose={onClose}>
       <form onSubmit={(e) => { e.preventDefault(); save(); }}>
         <label className="field">
-          <span>Importo mensile (lascia vuoto per rimuovere)</span>
+          <span>Quanto spendi di solito al mese (vuoto per rimuovere)</span>
           <input className="input" inputMode="decimal" autoFocus value={value} onChange={(e) => setValue(e.target.value)} placeholder="0,00" />
         </label>
         <button className="btn primary block" type="submit">Salva</button>
